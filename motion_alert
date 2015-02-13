@@ -1,0 +1,257 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# Author: Yuval Levy <http://www.photopla.net/>
+# Copyright: (c) 2014-2015 Yuval Levy
+# License: MIT (see LICENSE)
+# Version: 0.9 unreleased
+
+# Usage:
+# * Save this script as /usr/bin/motion_alert
+# * chmod ugo+x /usr/bin/motion_alert
+# * Add the following line to motion.conf:
+#       on_picture_save /usr/bin/motion_alert  %t %f "%Y-%m-%d %T" "%Y%m%d" "_debuginfo_" "%C"
+# * Edit the configuration parameters below (self-explanatory)
+
+from __future__ import print_function
+import sys, subprocess, os, time, smtplib
+from twilio.rest import TwilioRestClient
+from twilio import TwilioRestException
+
+#-- CONFIGURATION PARAMETERS --------------------------------------------------
+
+# Destination e-mail address
+TO          = "you@example.com"
+
+# Sender e-mail address
+FROM        = "detect@example.com"
+
+# Seconds to wait before sending another email
+INTERVAL    = 120
+
+# Number of frames to wait before emailing.  Determine by trial and error.
+# Trade-off: false positives vs. meaningful frame
+# My experience:
+# * 7 on a second generation Core i3 laptop
+# * 5 on a first generation Atom desktop
+FRAME       = 5
+
+# Start of e-mail subject
+SUBJECT     = "MD: "
+
+# Start of email body
+MSG         = "Camera reporting"
+
+# SMTP user
+SMTP_USER   = "USER"
+
+# SMTP password
+SMTP_PASSWD = "PASSWORD"
+
+# SMTP server
+SMTP_SERVER = "mx.xenaura.com"
+
+# SMTP port
+SMTP_PORT   = 587
+
+# Twilio Account SID
+account_sid = "ENTER_YOUR_SID"
+
+# Twilio auth_token
+auth_token  = "ENTER_YOUR_TOKEN"
+
+# Twilio FROM number
+from_sms    = "YOUR TWILIO NUMBER"
+
+# destination SMS
+to_sms      = "YOUR CELL NUMBER"
+
+#------------------------------------------------------------------------------
+
+# location of synchronisation script
+SYNC        = "/usr/bin/motion_sync"
+
+# file to keep track of time
+FILE        = "/tmp/motticker."
+
+# file to keep track of image count
+COUNTER     = "/tmp/motcounter."
+
+# file for attachment thumbnail
+THUMB       = "/tmp/alert."
+
+# debug data collection file
+DEBUG_LOG   = "/home/motion/debug.log"
+
+#-- NO NEED TO MAKE CHANGES BELOW THIS LINE -----------------------------------
+
+# Parameters passed by motion (depend on motion.conf):
+#   sys.argv[0] script name
+#   sys.argv[1] thread number
+#   sys.argv[2] picture's filename (full path)
+#   sys.argv[3] readable date
+#   sys.argv[4] computer date
+#   sys.argv[5] debug info
+#   sys.argv[6] camera name
+
+# Start moving information to safety if not already done
+subprocess.call(SYNC)
+
+# Use thread number to process each camera separately
+FILE    = FILE    + str(sys.argv[1])
+COUNTER = COUNTER + str(sys.argv[1])
+THUMB   = THUMB   + str(sys.argv[1])
+
+# Read last timestamp
+if os.path.isfile(FILE):
+  with open(FILE,"r") as myfile:
+    last = int(myfile.read())
+else:
+  last = 0
+
+# Read last counter
+if os.path.isfile(COUNTER):
+  with open(COUNTER,"r") as myfile:
+    count = int(myfile.read())
+else:
+  count = 0
+
+# To debug messaging, uncomment the next two lines
+#last = 0
+#count = FRAME -1
+
+debug_info = COUNTER + " " + str(count)
+with open (DEBUG_LOG,"a") as myfile:
+  print (debug_info, file=myfile)
+
+# Read current timestamp
+ts = int(time.time())
+
+# Generate human readable timestamp for debug log
+DATE = time.strftime("%Y-%m-%d:%H:%M:%S",time.gmtime(ts))
+
+# If INTERVAL has passed since last timestamp, count FRAME and send an email
+last = last + INTERVAL
+
+debug_info = str(ts) + " > " + str(last)
+with open (DEBUG_LOG,"a") as myfile:
+  print (debug_info, file=myfile)
+
+if (ts > last):
+  count = count + 1
+  if (count == FRAME):
+    # Save timestamp of last alert sent
+    with open(FILE,"w") as myfile:
+      print (str(ts), file=myfile)
+
+    # TODO: Add proper switch to decide if email is to be sent
+    if (1 == 1):
+
+      # Compose email message
+      import email
+      from email.mime.text import MIMEText
+      from email.mime.image import MIMEImage
+      from email.mime.multipart import MIMEMultipart
+
+      utc_from_epoch = time.time()
+      msg            = MIMEMultipart()
+      msg['Subject'] = (SUBJECT + sys.argv[6] + "-" + sys.argv[1] + " " + sys.argv[3])
+      msg['From']    = FROM
+      msg['To']      = TO
+      msg['Date']    = email.utils.formatdate(utc_from_epoch, localtime=True)
+
+      # Resize and attach picture
+      # NOTE: Might affect performance of low powered machine!
+      import Image
+      size = 1024, 1024
+      try:
+        im = Image.open(sys.argv[2])
+        im.thumbnail(size, Image.ANTIALIAS)
+        im.save(THUMB, "JPEG")
+      except IOError:
+        # debug message can't resize
+        print ("doh")
+
+      # Attach picture
+      fp = open(THUMB, 'rb')
+      # If not resizing because of performance, replace above line with 
+      #fp = open(sys.argv[2],'rb')
+      img = MIMEImage(fp.read())
+      fp.close()
+      msg.attach(img)
+
+      text = "Debug Info: " + sys.argv[5]
+      part1 = MIMEText(text, 'plain')
+
+      html = """\
+<html>
+  <head></head>
+  <body>
+    <p>Security Camera Notification:</p>
+    <p>TODO: include image</p>
+    <p>TODO: include link</p>
+  </body>
+</html>
+"""
+      part2 = MIMEText(html, 'html')
+
+      # Attach parts into message container.
+      # According to RFC 2046, the last part of a multipart message,
+      # in this case the HTML message, is best and preferred.
+      msg.attach(part1)
+      msg.attach(part2)
+
+      debug_info = DATE
+      # Connect to SMTP server and send the composed email
+      try:
+        s = smtplib.SMTP(SMTP_SERVER,SMTP_PORT)
+        s.ehlo()
+        s.starttls()
+        s.login(SMTP_USER,SMTP_PASSWD)
+        s.sendmail(FROM, TO, msg.as_string())
+        s.quit()
+        debug_info = debug_info + " sent email"
+      except smtplib.SMTPException:
+        # https://docs.python.org/2/library/smtplib.html
+        debug_info = debug_info + " SMTP error: no suitable authentication method was found " 
+      with open (DEBUG_LOG,"a") as myfile:
+        print (debug_info, file=myfile)
+
+    # TODO: Add proper switch to decide if SMS is to be sent
+    if (1 == 0):
+
+      # TODO: build image URL for text message
+      # based on upload location (see motion_sync)
+      # might want to upload the resized image to save on mobile bandwidth
+      txt = sys.argv[6] + " detected https://" + sys.argv[2] + "on " + sys.argv[3] readable date
+
+      # Decision: not to use MMS: it requires data plan, so cheaper
+      # to send SMS with URL to pull the image
+      
+      debug_info = ""
+      # Connect to Twilio and send SMS
+      try:
+        client = TwilioRestClient(account_sid, auth_token)
+        message = client.messages.create(
+          body=txt,
+          to=to_sms,
+          from_=from_sms
+        )
+        debug_info = DATE + "\t" + "SMS Alert! " + SUBJECT
+      except TwilioRestException as e:
+        debug_info = DATE + "\t" + str(e)
+      with open (DEBUG_LOG,"a") as myfile:
+        print (debug_info, file=myfile)
+
+    # Reset counter after notification
+    count = 0
+
+  # Write counter
+  with open (COUNTER,"w") as myfile:
+    print (str(count), file=myfile)
+
+# Write debug information
+debug_info = DATE+"\t"+sys.argv[3]+"\t"+sys.argv[2]+"\t"+sys.argv[1]+"\t"+sys.argv[5]
+
+with open (DEBUG_LOG,"a") as myfile:
+  print (debug_info, file=myfile)

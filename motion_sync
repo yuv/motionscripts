@@ -1,0 +1,88 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# Author: Yuval Levy <http://www.photopla.net/>
+# Copyright: (c) 2014-2015 Yuval Levy
+# License: MIT (see LICENSE)
+# Version: 0.9 unreleased
+
+# Usage:
+# * Save this script as /usr/bin/motion_sync
+# * chmod ugo+x /usr/bin/motion_sync
+# * Make sure the user motion can log into the backup server with ssh
+# * Add a cron job with crontab -e -u motion
+#       * * * * * /usr/bin/motion_sync
+# * Edit the configuration parameters below (self-explanatory)
+
+from __future__ import print_function
+import sys, subprocess, os, time, fcntl
+
+#-- CONFIGURATION PARAMETERS --------------------------------------------------
+
+# SSH User
+SSH_USER    = "USER"
+
+# SSH_Key
+SSH_KEY     = "/home/motion/.ssh/id_rsa"
+
+# SSH Port
+SSH_PORT    = "22"
+
+# SSH Server
+SSH_SERVER  = "example.com"
+
+# Local motion directory
+MOTION_DIR  = "/home/motion/surv"
+
+# Remote backup
+TARGET      = "/usr/local/www/"
+
+# Bandwidth limiter to avoid clogging the internet at every alert
+BWLIMIT     = 800
+
+#------------------------------------------------------------------------------
+
+# Location of rsync binary
+RSYNC       = "/usr/bin/rsync"
+
+# Debug data collection file
+DEBUG_LOG   = "/home/motion/debug.log"
+
+# Use a lockfile to make sure process runs only once
+lf          = "/tmp/pidLockFileMotion"
+
+#-- NO NEED TO MAKE CHANGES BELOW THIS LINE -----------------------------------
+
+# Read current timestamp
+ts=int(time.time())
+
+# Generate human readable timestamp for debug log
+DATE=time.strftime("%Y-%m-%d:%H:%M:%S",time.gmtime(ts))
+
+# lock a file to make sure only a single instance is running at any time
+try:
+ fp = open(lf,'w')
+ fcntl.lockf(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except IOError:
+  # if we can't lock, the process is already running
+  debug_info = DATE + "\t" + "sync already running"
+  with open (DEBUG_LOG,"a") as myfile:
+    print (debug_info, file=myfile)
+  sys.exit(1)
+else:
+  # Start the sync now
+  with open (DEBUG_LOG,"a") as myfile:
+    debug_info = DATE + "\t" + "starting sync"
+    print (debug_info, file=myfile)
+    SYNC = (RSYNC + ' --bwlimit=' + str(BWLIMIT) + " -az -e 'ssh -l" + SSH_USER + 
+           " -p " + str(SSH_PORT) + " -i " + SSH_KEY + "' " + MOTION_DIR + 
+           ' ' +SSH_USER + '@' + SSH_SERVER + ':' +TARGET)
+    debug_info = SYNC
+    print (debug_info, file=myfile)
+    subprocess.call(SYNC, shell=True)
+    # Generate human readable timestamp for debug log
+    DATE=time.strftime("%Y-%m-%d:%H:%M:%S",time.gmtime())
+    debug_info = DATE + "\t" + "sync ended"
+    print (debug_info, file=myfile)
+    fp.close()
+    os.remove(lf)
